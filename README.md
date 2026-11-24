@@ -15,14 +15,16 @@
 
 ```sh
 docker build -t b2b-it-marketplace-backend ./backend
-docker run --rm -p 127.0.0.1:8080:8080 b2b-it-marketplace-backend
+docker run --rm -p 127.0.0.1:18080:8080 b2b-it-marketplace-backend
 ```
+
+API доступен по адресу <http://127.0.0.1:18080/api/v1/health>.
 
 Для запуска напрямую понадобятся JDK 21 и Maven 3.9:
 
 ```sh
 mvn -f backend/pom.xml package
-java -jar backend/target/marketplace.jar --server.address=127.0.0.1
+java -jar backend/target/marketplace.jar --server.address=127.0.0.1 --server.port=18080
 ```
 
 ### Клиент React
