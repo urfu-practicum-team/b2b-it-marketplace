@@ -1,0 +1,2029 @@
+openapi: 3.0.3
+info:
+  title: B2B-маркетплейс ИТ-услуг с верификацией и эскроу — REST API
+  version: 1.0.0
+  description: |
+    API двухсторонней платформы: заказчики (CTO/PM) находят верифицированных ИТ-исполнителей,
+    сделки проходят через эскроу (ЮKassa / Тинькофф, песочница).
+
+    ## Общие соглашения
+    * Базовый путь `/api/v1`, формат JSON (UTF-8), даты — ISO 8601 (UTC).
+    * Аутентификация: `Authorization: Bearer <accessToken>` (JWT, TTL 15 мин). Обновление — `/auth/refresh`. Refresh-токен — JWT (TTL 7 суток), серверное хранилище токенов не ведётся: выход выполняется удалением токенов на клиенте.
+    * Роли: `CUSTOMER`, `EXECUTOR`, `ADMIN`. Ограничения по ролям указаны в описании операций.
+    * Деньги — число с двумя знаками после запятой, валюта RUB. Идентификаторы — UUID.
+    * Пагинация: `?page=0&size=20&sort=field,desc`; ответ содержит `items`, `page`, `size`, `totalItems`, `totalPages`.
+    * Ошибки — единый формат `Error` (см. схему). Конфликты состояний — `409` с кодом `INVALID_STATE`.
+    * Операции с деньгами (`/deals/{id}/fund`) требуют заголовка `Idempotency-Key`.
+
+    ## Жизненный цикл сделки (`DealStatus`)
+    ```
+    PENDING_FUNDING --(webhook: оплата прошла, деньги удержаны)--> IN_PROGRESS
+    IN_PROGRESS     --(исполнитель сдал результат)--------------> IN_REVIEW
+    IN_REVIEW       --(заказчик принял)-------------------------> ACCEPTED --(выплата прошла)--> COMPLETED
+    IN_REVIEW       --(заказчик запросил доработку)-------------> IN_PROGRESS
+    IN_PROGRESS|IN_REVIEW --(любая сторона открыла спор)--------> DISPUTED
+    DISPUTED        --(решение админа)--> COMPLETED (выплата исполнителю) | REFUNDED (возврат заказчику)
+    PENDING_FUNDING --(отмена любой стороной)-------------------> CANCELLED
+    ```
+
+    ## Допущения (согласовать с заказчиком проекта)
+    * Комиссия платформы удерживается из суммы выплаты исполнителю; заказчик платит ровно `amount`.
+    * Откликаться на заказы могут только исполнители со статусом верификации `VERIFIED`.
+    * Платёжные провайдеры работают в тестовом режиме (песочница); реальные деньги и реальные ПДн не используются.
+  contact:
+    name: Команда проекта
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Локальная разработка
+tags:
+  - { name: Auth, description: Регистрация и аутентификация }
+  - { name: Users, description: Текущий пользователь }
+  - { name: Executors, description: 'Профили исполнителей, поиск, навыки' }
+  - { name: Portfolio, description: Портфолио исполнителя }
+  - { name: Customers, description: Профиль заказчика и компания }
+  - { name: Skills, description: Справочник навыков }
+  - { name: Files, description: Загрузка и скачивание файлов }
+  - { name: Verification, description: 'Верификация исполнителя (паспорт, ИНН, портфолио)' }
+  - { name: Orders, description: Заказы }
+  - { name: Proposals, description: Отклики исполнителей }
+  - { name: Deals, description: 'Сделки, сдача и приёмка результата' }
+  - { name: Payments, description: Эскроу-платежи }
+  - { name: Disputes, description: Споры }
+  - { name: Reviews, description: Отзывы и рейтинги }
+  - { name: Chat, description: Чат по заказу }
+  - { name: Notifications, description: Уведомления }
+  - { name: Webhooks, description: Входящие уведомления платёжных систем }
+  - { name: Admin, description: Админ-панель (только ADMIN) }
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ------------------------------------------------------------------ AUTH
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Регистрация заказчика или исполнителя
+      description: Роль `ADMIN` через API создать нельзя. Для `CUSTOMER` можно сразу передать данные компании.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          description: Пользователь создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Вход по email и паролю
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Успешный вход
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Учётная запись заблокирована (`USER_BLOCKED`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Обновление пары токенов
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: Новая пара токенов
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Текущий пользователь
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [Users]
+      summary: Изменить имя и телефон
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fullName: { type: string, maxLength: 200 }
+                phone: { type: string, maxLength: 32 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /users/me/password:
+    post:
+      tags: [Users]
+      summary: Сменить пароль
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, format: password }
+                newPassword: { type: string, format: password, minLength: 8 }
+      responses:
+        '204': { description: Пароль изменён }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /users/{userId}/reviews:
+    get:
+      tags: [Reviews]
+      summary: Отзывы о пользователе
+      parameters:
+        - { $ref: '#/components/parameters/UserId' }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewPage' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------- EXECUTORS
+  /executors:
+    get:
+      tags: [Executors]
+      summary: Поиск исполнителей
+      description: |
+        Каталог для заказчиков. По умолчанию возвращает всех активных исполнителей;
+        `verifiedOnly=true` оставляет только верифицированных. Сортировка по умолчанию — `rating,desc`.
+      parameters:
+        - { name: q, in: query, description: 'Поиск по имени, заголовку и описанию', schema: { type: string } }
+        - name: skillIds
+          in: query
+          description: Навыки (логика «И» — исполнитель должен владеть всеми)
+          schema: { type: array, items: { type: integer } }
+          style: form
+          explode: false
+        - { name: minRating, in: query, schema: { type: number, minimum: 0, maximum: 5 } }
+        - { name: maxHourlyRate, in: query, schema: { type: number } }
+        - { name: verifiedOnly, in: query, schema: { type: boolean, default: false } }
+        - { name: availability, in: query, schema: { $ref: '#/components/schemas/Availability' } }
+        - { name: isStudent, in: query, schema: { type: boolean } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: sort, in: query, schema: { type: string, enum: ['rating,desc', 'hourlyRate,asc', 'hourlyRate,desc', 'completedDeals,desc'] } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExecutorPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /executors/{executorId}:
+    get:
+      tags: [Executors]
+      summary: Профиль исполнителя (публичная часть)
+      parameters:
+        - { $ref: '#/components/parameters/ExecutorId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExecutorProfile' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /executors/{executorId}/portfolio:
+    get:
+      tags: [Portfolio]
+      summary: Портфолио исполнителя
+      parameters:
+        - { $ref: '#/components/parameters/ExecutorId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PortfolioItem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /executors/me:
+    get:
+      tags: [Executors]
+      summary: Мой профиль исполнителя
+      description: Роль `EXECUTOR`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExecutorProfile' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [Executors]
+      summary: Обновить мой профиль
+      description: Роль `EXECUTOR`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExecutorProfileUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExecutorProfile' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /executors/me/skills:
+    put:
+      tags: [Executors]
+      summary: Заменить список навыков
+      description: Роль `EXECUTOR`. Передаётся полный новый список.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/ExecutorSkillInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ExecutorSkill' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /executors/me/portfolio:
+    post:
+      tags: [Portfolio]
+      summary: Добавить работу в портфолио
+      description: Роль `EXECUTOR`. Файлы предварительно загружаются через `/files` (purpose=PORTFOLIO) и привязываются к работе по `fileIds`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PortfolioItemInput' }
+      responses:
+        '201':
+          description: Создано
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PortfolioItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /executors/me/portfolio/{itemId}:
+    parameters:
+      - { name: itemId, in: path, required: true, schema: { type: string, format: uuid } }
+    put:
+      tags: [Portfolio]
+      summary: Изменить работу в портфолио
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PortfolioItemInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PortfolioItem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Portfolio]
+      summary: Удалить работу из портфолио
+      responses:
+        '204': { description: Удалено }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------- CUSTOMERS
+  /customers/me:
+    get:
+      tags: [Customers]
+      summary: Мой профиль заказчика
+      description: Роль `CUSTOMER`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerProfile' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [Customers]
+      summary: Обновить профиль заказчика и данные компании
+      description: Роль `CUSTOMER`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomerProfileUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerProfile' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ---------------------------------------------------------------- SKILLS
+  /skills:
+    get:
+      tags: [Skills]
+      summary: Справочник навыков
+      parameters:
+        - { name: category, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Skill' }
+
+  # ----------------------------------------------------------------- FILES
+  /files:
+    post:
+      tags: [Files]
+      summary: Загрузить файл
+      description: Максимальный размер — 10 МБ. Допустимые типы зависят от `purpose` (сканы — jpg/png/pdf).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, purpose]
+              properties:
+                file: { type: string, format: binary }
+                purpose: { $ref: '#/components/schemas/FilePurpose' }
+      responses:
+        '201':
+          description: Файл сохранён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileMeta' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '413':
+          description: Файл больше допустимого размера
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /files/{fileId}:
+    get:
+      tags: [Files]
+      summary: Скачать файл
+      description: Доступен владельцу, участникам связанной сделки/спора/чата и администратору.
+      parameters:
+        - { name: fileId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Содержимое файла
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------- VERIFICATION
+  /verification-requests:
+    post:
+      tags: [Verification]
+      summary: Подать заявку на верификацию
+      description: |
+        Роль `EXECUTOR`. Паспорт передаётся **только как файл** (учебный/тестовый скан), номер паспорта не хранится.
+        Автоматические проверки (контрольная сумма ИНН, наличие ≥1 работы в портфолио) выполняются синхронно;
+        если они пройдены — заявка попадает в очередь ручной проверки администратором.
+        Целевое время прохождения процедуры — ≤ 5 минут.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerificationRequestInput' }
+      responses:
+        '201':
+          description: Заявка принята
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /verification-requests/me:
+    get:
+      tags: [Verification]
+      summary: История моих заявок на верификацию
+      description: Роль `EXECUTOR`. Сортировка — от новых к старым.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/VerificationRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ---------------------------------------------------------------- ORDERS
+  /orders:
+    get:
+      tags: [Orders]
+      summary: Лента опубликованных заказов
+      description: Только заказы со статусом `PUBLISHED`. Основной сценарий — поиск заказов исполнителем.
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: category, in: query, schema: { type: string } }
+        - name: skillIds
+          in: query
+          schema: { type: array, items: { type: integer } }
+          style: form
+          explode: false
+        - { name: budgetFrom, in: query, schema: { type: number } }
+        - { name: budgetTo, in: query, schema: { type: number } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: sort, in: query, schema: { type: string, enum: ['publishedAt,desc', 'budgetMax,desc', 'deadlineAt,asc'] } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderPage' }
+    post:
+      tags: [Orders]
+      summary: Создать заказ (черновик)
+      description: Роль `CUSTOMER`. Заказ создаётся в статусе `DRAFT`, публикуется отдельным вызовом.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrderInput' }
+      responses:
+        '201':
+          description: Создано
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /orders/my:
+    get:
+      tags: [Orders]
+      summary: Мои заказы
+      description: Роль `CUSTOMER`.
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/OrderStatus' } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderPage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /orders/{orderId}:
+    parameters:
+      - { $ref: '#/components/parameters/OrderId' }
+    get:
+      tags: [Orders]
+      summary: Карточка заказа
+      description: Черновики и заблокированные заказы видны только владельцу и администратору.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Orders]
+      summary: Изменить заказ
+      description: Владелец. Допустимо в статусах `DRAFT` и `PUBLISHED` (пока нет сделки).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrderInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /orders/{orderId}/publish:
+    post:
+      tags: [Orders]
+      summary: Опубликовать заказ
+      description: Владелец. `DRAFT → PUBLISHED`.
+      parameters:
+        - { $ref: '#/components/parameters/OrderId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /orders/{orderId}/cancel:
+    post:
+      tags: [Orders]
+      summary: Отменить заказ
+      description: Владелец. Невозможно, если есть активная сделка — тогда отменяется сделка.
+      parameters:
+        - { $ref: '#/components/parameters/OrderId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # ------------------------------------------------------------- PROPOSALS
+  /orders/{orderId}/proposals:
+    parameters:
+      - { $ref: '#/components/parameters/OrderId' }
+    get:
+      tags: [Proposals]
+      summary: Отклики на заказ
+      description: Владелец заказа или администратор.
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/ProposalStatus' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Proposal' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Proposals]
+      summary: Откликнуться на заказ
+      description: |
+        Роль `EXECUTOR`, статус верификации `VERIFIED` (иначе `403 VERIFICATION_REQUIRED`).
+        Один отклик на заказ от одного исполнителя (`409`, если уже есть).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProposalInput' }
+      responses:
+        '201':
+          description: Отклик создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proposal' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /proposals/my:
+    get:
+      tags: [Proposals]
+      summary: Мои отклики
+      description: Роль `EXECUTOR`.
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/ProposalStatus' } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProposalPage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /proposals/{proposalId}/withdraw:
+    post:
+      tags: [Proposals]
+      summary: Отозвать отклик
+      description: Автор отклика. Только в статусе `PENDING`.
+      parameters:
+        - { $ref: '#/components/parameters/ProposalId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proposal' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /proposals/{proposalId}/reject:
+    post:
+      tags: [Proposals]
+      summary: Отклонить отклик
+      description: Владелец заказа. `PENDING → REJECTED`.
+      parameters:
+        - { $ref: '#/components/parameters/ProposalId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proposal' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /proposals/{proposalId}/accept:
+    post:
+      tags: [Proposals]
+      summary: Принять отклик и создать сделку
+      description: |
+        Владелец заказа. В одной транзакции: отклик → `ACCEPTED`, остальные `PENDING` → `REJECTED`,
+        заказ → `IN_PROGRESS`, создаётся сделка в статусе `PENDING_FUNDING` с зафиксированной текущей ставкой комиссии.
+        Если у заказа `ndaRequired=true`, формируется NDA по шаблону платформы (текст в ресурсах приложения, в БД сохраняется снимок).
+      parameters:
+        - { $ref: '#/components/parameters/ProposalId' }
+      responses:
+        '201':
+          description: Сделка создана
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Deal' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # ----------------------------------------------------------------- DEALS
+  /deals:
+    get:
+      tags: [Deals]
+      summary: Мои сделки
+      description: Для `CUSTOMER` и `EXECUTOR` — свои сделки.
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/DealStatus' } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DealPage' }
+  /deals/{dealId}:
+    get:
+      tags: [Deals]
+      summary: Карточка сделки
+      description: Участники сделки и администратор.
+      parameters:
+        - { $ref: '#/components/parameters/DealId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Deal' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /deals/{dealId}/nda:
+    get:
+      tags: [Deals]
+      summary: NDA по сделке
+      parameters:
+        - { $ref: '#/components/parameters/DealId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NdaAgreement' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /deals/{dealId}/nda/sign:
+    post:
+      tags: [Deals]
+      summary: Подписать NDA (электронное согласие стороны)
+      description: Каждая сторона подписывает от своего имени. Пока NDA не подписано обеими сторонами, оплата эскроу недоступна (`409`).
+      parameters:
+        - { $ref: '#/components/parameters/DealId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NdaAgreement' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /deals/{dealId}/fund:
+    post:
+      tags: [Payments]
+      summary: Внести оплату в эскроу
+      description: |
+        Роль `CUSTOMER` (владелец сделки), статус `PENDING_FUNDING`. Создаёт платёж `DEPOSIT` у выбранного провайдера
+        и возвращает ссылку для оплаты. Деньги удерживаются до приёмки результата. После подтверждения оплаты
+        webhook переводит сделку в `IN_PROGRESS`. Повтор запроса с тем же `Idempotency-Key` возвращает тот же платёж.
+      parameters:
+        - { $ref: '#/components/parameters/DealId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FundRequest' }
+      responses:
+        '201':
+          description: Платёж создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentInit' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502':
+          description: Ошибка платёжного провайдера (`PAYMENT_PROVIDER_ERROR`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /deals/{dealId}/payments:
+    get:
+      tags: [Payments]
+      summary: Платежи по сделке (депозит, выплата, возврат)
+      parameters:
+        - { $ref: '#/components/parameters/DealId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Payment' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /deals/{dealId}/submissions:
+    parameters:
+      - { $ref: '#/components/parameters/DealId' }
+    get:
+      tags: [Deals]
+      summary: История сдачи результата
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Submission' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Deals]
+      summary: Сдать результат на приёмку
+      description: Исполнитель сделки. `IN_PROGRESS → IN_REVIEW`. Файлы предварительно загружаются через `/files` (purpose=DELIVERABLE).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SubmissionInput' }
+      responses:
+        '201':
+          description: Результат сдан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Submission' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /deals/{dealId}/accept:
+    post:
+      tags: [Deals]
+      summary: Принять результат
+      description: |
+        Заказчик. `IN_REVIEW → ACCEPTED`, запускается выплата исполнителю на сумму `executorPayout`
+        (платёж `PAYOUT`); после успешной выплаты — `COMPLETED`.
+      parameters:
+        - { $ref: '#/components/parameters/DealId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Deal' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /deals/{dealId}/request-revision:
+    post:
+      tags: [Deals]
+      summary: Запросить доработку
+      description: Заказчик. `IN_REVIEW → IN_PROGRESS`; комментарий сохраняется в последней сдаче.
+      parameters:
+        - { $ref: '#/components/parameters/DealId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [comment]
+              properties:
+                comment: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Deal' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /deals/{dealId}/cancel:
+    post:
+      tags: [Deals]
+      summary: Отменить сделку до оплаты
+      description: Любая сторона, только в статусе `PENDING_FUNDING`. После оплаты расторжение возможно лишь через спор.
+      parameters:
+        - { $ref: '#/components/parameters/DealId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Deal' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /deals/{dealId}/disputes:
+    post:
+      tags: [Disputes]
+      summary: Открыть спор по сделке
+      description: |
+        Любая сторона, статусы `IN_PROGRESS` или `IN_REVIEW`. Сделка → `DISPUTED`, платежи замораживаются.
+        Срок решения — не более 3 рабочих дней (`slaDueAt`). Обсуждение и доказательства — в чате заказа (`chatThreadId` в карточке спора), администратор видит этот диалог.
+      parameters:
+        - { $ref: '#/components/parameters/DealId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 10 }
+      responses:
+        '201':
+          description: Спор открыт
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dispute' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /deals/{dealId}/reviews:
+    post:
+      tags: [Reviews]
+      summary: Оставить отзыв по сделке
+      description: |
+        Участник сделки в статусе `COMPLETED`. Отзыв адресуется второй стороне; один отзыв от стороны на сделку.
+        Рейтинг исполнителя пересчитывается автоматически.
+      parameters:
+        - { $ref: '#/components/parameters/DealId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewInput' }
+      responses:
+        '201':
+          description: Отзыв создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Review' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # -------------------------------------------------------------- DISPUTES
+  /disputes:
+    get:
+      tags: [Disputes]
+      summary: Мои споры
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/DisputeStatus' } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DisputePage' }
+  /disputes/{disputeId}:
+    get:
+      tags: [Disputes]
+      summary: Карточка спора
+      parameters:
+        - { $ref: '#/components/parameters/DisputeId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dispute' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /chats:
+    get:
+      tags: [Chat]
+      summary: Мои диалоги
+      description: Сортировка по `lastMessageAt` (новые сверху).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ChatThread' }
+    post:
+      tags: [Chat]
+      summary: Открыть диалог по заказу (получить существующий или создать)
+      description: |
+        Заказчик передаёт `orderId` и `executorId`; исполнитель — только `orderId`
+        (заказ должен быть `PUBLISHED` или связан с его откликом/сделкой).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderId]
+              properties:
+                orderId: { type: string, format: uuid }
+                executorId: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Диалог уже существовал
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatThread' }
+        '201':
+          description: Диалог создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatThread' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /chats/{threadId}/messages:
+    parameters:
+      - { name: threadId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Chat]
+      summary: Сообщения диалога
+      description: Курсорная пагинация назад по времени. В MVP новые сообщения получаются опросом (polling) каждые 5–10 с.
+      parameters:
+        - { name: before, in: query, description: Вернуть сообщения старше этого момента, schema: { type: string, format: date-time } }
+        - { name: size, in: query, schema: { type: integer, default: 50, maximum: 100 } }
+      responses:
+        '200':
+          description: OK (от новых к старым)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ChatMessage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Chat]
+      summary: Отправить сообщение
+      description: Нужен `body` или `fileId` (или оба).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                body: { type: string }
+                fileId: { type: string, format: uuid, description: 'Файл с purpose=CHAT_ATTACHMENT' }
+      responses:
+        '201':
+          description: Отправлено
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatMessage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /chats/{threadId}/read:
+    post:
+      tags: [Chat]
+      summary: Отметить сообщения собеседника прочитанными
+      parameters:
+        - { name: threadId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: OK }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # --------------------------------------------------------- NOTIFICATIONS
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: Мои уведомления
+      parameters:
+        - { name: unreadOnly, in: query, schema: { type: boolean, default: false } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationPage' }
+  /notifications/unread-count:
+    get:
+      tags: [Notifications]
+      summary: Количество непрочитанных
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+  /notifications/{notificationId}/read:
+    post:
+      tags: [Notifications]
+      summary: Отметить прочитанным
+      parameters:
+        - { name: notificationId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: OK }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: Отметить все прочитанными
+      responses:
+        '204': { description: OK }
+
+  # ------------------------------------------------------------ COMMISSION
+  /commission/current:
+    get:
+      tags: [Deals]
+      summary: Текущая ставка комиссии платформы
+      description: Нужна UI для предварительного расчёта выплаты исполнителю.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommissionSetting' }
+
+  # -------------------------------------------------------------- WEBHOOKS
+  /webhooks/yookassa:
+    post:
+      tags: [Webhooks]
+      summary: Уведомление ЮKassa
+      description: |
+        Без JWT. Защита: белый список IP ЮKassa и **повторный запрос статуса платежа через API провайдера**
+        (не доверять телу уведомления). Обработка идемпотентна (таблица `payment_webhook_events`).
+        События: `payment.waiting_for_capture`, `payment.succeeded`, `payment.canceled`, `refund.succeeded`, `payout.succeeded`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { description: Принято (провайдер повторяет доставку при любом другом коде) }
+  /webhooks/tinkoff:
+    post:
+      tags: [Webhooks]
+      summary: Уведомление Тинькофф
+      description: 'Без JWT. Защита: проверка подписи `Token` по алгоритму провайдера. Ответ — строка `OK`.'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Принято
+          content:
+            text/plain:
+              schema: { type: string, example: OK }
+
+  # ----------------------------------------------------------------- ADMIN
+  /admin/verification-requests:
+    get:
+      tags: [Admin]
+      summary: Очередь заявок на верификацию
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/VerificationRequestStatus' } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: Сортировка — от старых к новым
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationRequestPage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/verification-requests/{requestId}:
+    get:
+      tags: [Admin]
+      summary: Заявка на верификацию (с файлами и результатами автопроверок)
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/verification-requests/{requestId}/approve:
+    post:
+      tags: [Admin]
+      summary: Одобрить заявку
+      description: Заявка → `APPROVED`, профиль исполнителя → `VERIFIED`, исполнителю уходит уведомление.
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/verification-requests/{requestId}/reject:
+    post:
+      tags: [Admin]
+      summary: Отклонить заявку
+      description: Причина обязательна. Профиль исполнителя → `REJECTED`; можно подать новую заявку.
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/disputes:
+    get:
+      tags: [Admin]
+      summary: Очередь споров
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/DisputeStatus' } }
+        - { name: overdue, in: query, description: Только просроченные по SLA, schema: { type: boolean } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: Сортировка по `slaDueAt` по возрастанию
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DisputePage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/disputes/{disputeId}/take:
+    post:
+      tags: [Admin]
+      summary: Взять спор в работу
+      description: '`OPEN → IN_REVIEW`.'
+      parameters:
+        - { $ref: '#/components/parameters/DisputeId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dispute' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/disputes/{disputeId}/resolve:
+    post:
+      tags: [Admin]
+      summary: Вынести решение по спору
+      description: |
+        * `RELEASE_TO_EXECUTOR` — выплата исполнителю, сделка → `COMPLETED`.
+        * `REFUND_TO_CUSTOMER` — возврат заказчику, сделка → `REFUNDED`.
+        * `SPLIT` — обязательны `executorAmount` и `customerAmount`; их сумма должна равняться `amount` сделки,
+          комиссия считается только с части исполнителя; сделка → `COMPLETED`.
+      parameters:
+        - { $ref: '#/components/parameters/DisputeId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DisputeResolutionInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dispute' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: Список пользователей
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: role, in: query, schema: { $ref: '#/components/schemas/Role' } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/UserStatus' } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/users/{userId}/block:
+    post:
+      tags: [Admin]
+      summary: Заблокировать пользователя
+      parameters:
+        - { $ref: '#/components/parameters/UserId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/users/{userId}/unblock:
+    post:
+      tags: [Admin]
+      summary: Разблокировать пользователя
+      parameters:
+        - { $ref: '#/components/parameters/UserId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/orders/{orderId}/block:
+    post:
+      tags: [Admin]
+      summary: Заблокировать заказ (модерация)
+      description: '`PUBLISHED → BLOCKED`. Владельцу отправляется уведомление с причиной.'
+      parameters:
+        - { $ref: '#/components/parameters/OrderId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/commission:
+    put:
+      tags: [Admin]
+      summary: Установить ставку комиссии платформы
+      description: 'Допустимый диапазон — 10–15 % (иначе `400 COMMISSION_OUT_OF_RANGE`). Ставка хранится в `platform_settings` и не влияет на уже созданные сделки: в сделке она фиксируется при создании.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ratePercent]
+              properties:
+                ratePercent: { type: number, minimum: 10, maximum: 15, multipleOf: 0.01 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommissionSetting' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/stats:
+    get:
+      tags: [Admin]
+      summary: Метрики пилота
+      description: Показатели для проверки критериев успеха проекта (≥20 сделок, время верификации, время решения споров).
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformStats' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Page: { name: page, in: query, description: 'Номер страницы с 0', schema: { type: integer, minimum: 0, default: 0 } }
+    Size: { name: size, in: query, description: 'Размер страницы', schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Уникальный ключ операции (UUID), генерируется клиентом
+      schema: { type: string, maxLength: 64 }
+    UserId: { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+    ExecutorId: { name: executorId, in: path, required: true, schema: { type: string, format: uuid } }
+    OrderId: { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+    ProposalId: { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+    DealId: { name: dealId, in: path, required: true, schema: { type: string, format: uuid } }
+    DisputeId: { name: disputeId, in: path, required: true, schema: { type: string, format: uuid } }
+    RequestId: { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+
+  responses:
+    BadRequest:
+      description: Ошибка валидации (`VALIDATION_ERROR`) или нарушение бизнес-правила
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            code: VALIDATION_ERROR
+            message: Некорректные данные запроса
+            timestamp: '2026-11-01T10:00:00Z'
+            details:
+              - { field: budgetMax, message: 'должно быть не меньше budgetMin' }
+    Unauthorized:
+      description: Не авторизован или токен недействителен (`UNAUTHORIZED`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Недостаточно прав (`FORBIDDEN`, `VERIFICATION_REQUIRED`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Объект не найден (`NOT_FOUND`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Конфликт состояния (`INVALID_STATE`, `ALREADY_EXISTS`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            code: INVALID_STATE
+            message: Операция недоступна в статусе IN_PROGRESS
+            timestamp: '2026-11-01T10:00:00Z'
+
+  schemas:
+    # ---------------------------------------------------------- common
+    Error:
+      type: object
+      required: [code, message, timestamp]
+      properties:
+        code: { type: string, description: Машиночитаемый код ошибки }
+        message: { type: string }
+        timestamp: { type: string, format: date-time }
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }
+    PageMeta:
+      type: object
+      required: [page, size, totalItems, totalPages]
+      properties:
+        page: { type: integer }
+        size: { type: integer }
+        totalItems: { type: integer, format: int64 }
+        totalPages: { type: integer }
+    Money:
+      type: number
+      multipleOf: 0.01
+      minimum: 0
+      example: 100000.00
+
+    # ------------------------------------------------------------ enums
+    Role: { type: string, enum: [CUSTOMER, EXECUTOR, ADMIN] }
+    UserStatus: { type: string, enum: [ACTIVE, BLOCKED, DELETED] }
+    Availability: { type: string, enum: [AVAILABLE, BUSY, UNAVAILABLE] }
+    SkillLevel: { type: string, enum: [JUNIOR, MIDDLE, SENIOR] }
+    VerificationStatus: { type: string, enum: [NOT_VERIFIED, PENDING, VERIFIED, REJECTED] }
+    VerificationRequestStatus: { type: string, enum: [PENDING, APPROVED, REJECTED] }
+    FilePurpose:
+      type: string
+      enum: [AVATAR, PASSPORT, INN_DOC, PORTFOLIO, DELIVERABLE, CHAT_ATTACHMENT]
+    OrderStatus: { type: string, enum: [DRAFT, PUBLISHED, IN_PROGRESS, COMPLETED, CANCELLED, BLOCKED] }
+    ProposalStatus: { type: string, enum: [PENDING, ACCEPTED, REJECTED, WITHDRAWN] }
+    DealStatus:
+      type: string
+      enum: [PENDING_FUNDING, IN_PROGRESS, IN_REVIEW, ACCEPTED, COMPLETED, DISPUTED, CANCELLED, REFUNDED]
+    PaymentType: { type: string, enum: [DEPOSIT, PAYOUT, REFUND] }
+    PaymentStatus: { type: string, enum: [PENDING, AUTHORIZED, SUCCEEDED, FAILED, CANCELED] }
+    PaymentProvider: { type: string, enum: [YOOKASSA, TINKOFF] }
+    DisputeStatus: { type: string, enum: [OPEN, IN_REVIEW, RESOLVED] }
+    DisputeResolution: { type: string, enum: [RELEASE_TO_EXECUTOR, REFUND_TO_CUSTOMER, SPLIT] }
+    SubmissionStatus: { type: string, enum: [SUBMITTED, ACCEPTED, REVISION_REQUESTED] }
+
+    # ------------------------------------------------------------- auth
+    RegisterRequest:
+      type: object
+      required: [email, password, fullName, role]
+      properties:
+        email: { type: string, format: email, maxLength: 255 }
+        password: { type: string, format: password, minLength: 8, maxLength: 72 }
+        fullName: { type: string, maxLength: 200 }
+        phone: { type: string, maxLength: 32 }
+        role:
+          type: string
+          enum: [CUSTOMER, EXECUTOR]
+        company:
+          description: Только для `CUSTOMER`
+          allOf:
+            - { $ref: '#/components/schemas/CompanyInput' }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+    TokenPair:
+      type: object
+      required: [accessToken, refreshToken, expiresIn]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, description: 'Время жизни access-токена, секунды', example: 900 }
+    AuthResponse:
+      type: object
+      required: [tokens, user]
+      properties:
+        tokens: { $ref: '#/components/schemas/TokenPair' }
+        user: { $ref: '#/components/schemas/User' }
+
+    # ------------------------------------------------------------ users
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        fullName: { type: string }
+        phone: { type: string, nullable: true }
+        role: { $ref: '#/components/schemas/Role' }
+        status: { $ref: '#/components/schemas/UserStatus' }
+        emailConfirmed: { type: boolean }
+        createdAt: { type: string, format: date-time }
+    UserBrief:
+      type: object
+      description: Краткие публичные данные пользователя
+      properties:
+        id: { type: string, format: uuid }
+        fullName: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+    UserPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageMeta' }
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/User' } }
+
+    Skill:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string, example: Spring Boot }
+        category: { type: string, example: Backend }
+    ExecutorSkillInput:
+      type: object
+      required: [skillId]
+      properties:
+        skillId: { type: integer }
+        level: { $ref: '#/components/schemas/SkillLevel' }
+        yearsExperience: { type: integer, minimum: 0 }
+    ExecutorSkill:
+      type: object
+      properties:
+        skill: { $ref: '#/components/schemas/Skill' }
+        level: { $ref: '#/components/schemas/SkillLevel' }
+        yearsExperience: { type: integer, nullable: true }
+
+    # -------------------------------------------------------- executors
+    ExecutorSummary:
+      type: object
+      description: Карточка исполнителя в каталоге
+      properties:
+        userId: { type: string, format: uuid }
+        displayName: { type: string }
+        headline: { type: string, nullable: true }
+        hourlyRate: { type: number, nullable: true }
+        verificationStatus: { $ref: '#/components/schemas/VerificationStatus' }
+        ratingAvg: { type: number, minimum: 0, maximum: 5 }
+        ratingCount: { type: integer }
+        completedDeals: { type: integer }
+        availability: { $ref: '#/components/schemas/Availability' }
+        isStudent: { type: boolean }
+        topSkills:
+          type: array
+          items: { $ref: '#/components/schemas/Skill' }
+    ExecutorPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageMeta' }
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/ExecutorSummary' } }
+    ExecutorProfile:
+      allOf:
+        - { $ref: '#/components/schemas/ExecutorSummary' }
+        - type: object
+          properties:
+            bio: { type: string, nullable: true }
+            experienceYears: { type: integer, nullable: true }
+            university: { type: string, nullable: true }
+            verifiedAt: { type: string, format: date-time, nullable: true }
+            skills:
+              type: array
+              items: { $ref: '#/components/schemas/ExecutorSkill' }
+            portfolio:
+              type: array
+              items: { $ref: '#/components/schemas/PortfolioItem' }
+    ExecutorProfileUpdate:
+      type: object
+      required: [displayName]
+      properties:
+        displayName: { type: string, maxLength: 120 }
+        headline: { type: string, maxLength: 200 }
+        bio: { type: string }
+        hourlyRate: { type: number, minimum: 0 }
+        experienceYears: { type: integer, minimum: 0, maximum: 60 }
+        availability: { $ref: '#/components/schemas/Availability' }
+        isStudent: { type: boolean }
+        university: { type: string, maxLength: 200 }
+    PortfolioItemInput:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, maxLength: 200 }
+        description: { type: string }
+        projectUrl: { type: string, format: uri, maxLength: 500 }
+        completedYear: { type: integer, minimum: 1990, maximum: 2100 }
+        fileIds:
+          type: array
+          items: { type: string, format: uuid }
+    PortfolioItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        projectUrl: { type: string, nullable: true }
+        completedYear: { type: integer, nullable: true }
+        files:
+          type: array
+          items: { $ref: '#/components/schemas/FileMeta' }
+        createdAt: { type: string, format: date-time }
+
+    # -------------------------------------------------------- customers
+    CompanyInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 255 }
+        inn: { type: string, pattern: '^[0-9]{10}([0-9]{2})?$', description: ИНН юрлица (10) или ИП (12) }
+        website: { type: string, format: uri }
+        description: { type: string }
+    Company:
+      allOf:
+        - { $ref: '#/components/schemas/CompanyInput' }
+    CustomerProfile:
+      type: object
+      properties:
+        userId: { type: string, format: uuid }
+        jobTitle: { type: string, nullable: true }
+        company:
+          allOf:
+            - { $ref: '#/components/schemas/Company' }
+          nullable: true
+    CustomerProfileUpdate:
+      type: object
+      properties:
+        jobTitle: { type: string, maxLength: 120 }
+        company: { $ref: '#/components/schemas/CompanyInput' }
+
+    # ------------------------------------------------------------ files
+    FileMeta:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        originalName: { type: string }
+        contentType: { type: string }
+        sizeBytes: { type: integer, format: int64 }
+        purpose: { $ref: '#/components/schemas/FilePurpose' }
+        createdAt: { type: string, format: date-time }
+
+    # ----------------------------------------------------- verification
+    VerificationRequestInput:
+      type: object
+      required: [inn, passportFileId]
+      properties:
+        inn: { type: string, pattern: '^[0-9]{12}$', description: ИНН физлица (12 цифр) — только тестовые данные }
+        passportFileId: { type: string, format: uuid, description: 'Файл с purpose=PASSPORT' }
+        innFileId: { type: string, format: uuid, description: 'Файл с purpose=INN_DOC (необязательно)' }
+    VerificationRequest:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        executor: { $ref: '#/components/schemas/UserBrief' }
+        status: { $ref: '#/components/schemas/VerificationRequestStatus' }
+        inn: { type: string }
+        passportFile: { $ref: '#/components/schemas/FileMeta' }
+        innFile: { allOf: [ { $ref: '#/components/schemas/FileMeta' } ], nullable: true }
+        autoChecks:
+          type: object
+          additionalProperties: true
+          example: { innChecksum: true, portfolioCount: 3 }
+        rejectReason: { type: string, nullable: true }
+        submittedAt: { type: string, format: date-time }
+        reviewedAt: { type: string, format: date-time, nullable: true }
+    VerificationRequestPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageMeta' }
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/VerificationRequest' } }
+
+    # ----------------------------------------------------------- orders
+    OrderInput:
+      type: object
+      required: [title, description, category]
+      properties:
+        title: { type: string, maxLength: 200 }
+        description: { type: string }
+        category: { type: string, maxLength: 64, example: Backend }
+        skillIds: { type: array, items: { type: integer } }
+        budgetMin: { $ref: '#/components/schemas/Money' }
+        budgetMax: { $ref: '#/components/schemas/Money' }
+        deadlineAt: { type: string, format: date }
+        ndaRequired: { type: boolean, default: false }
+    Order:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        customer:
+          type: object
+          properties:
+            userId: { type: string, format: uuid }
+            fullName: { type: string }
+            companyName: { type: string, nullable: true }
+        title: { type: string }
+        description: { type: string }
+        category: { type: string }
+        skills: { type: array, items: { $ref: '#/components/schemas/Skill' } }
+        budgetMin: { type: number, nullable: true }
+        budgetMax: { type: number, nullable: true }
+        deadlineAt: { type: string, format: date, nullable: true }
+        ndaRequired: { type: boolean }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        proposalsCount: { type: integer }
+        publishedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+    OrderPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageMeta' }
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Order' } }
+
+    # -------------------------------------------------------- proposals
+    ProposalInput:
+      type: object
+      required: [coverLetter, price, durationDays]
+      properties:
+        coverLetter: { type: string, minLength: 20 }
+        price: { type: number, exclusiveMinimum: true, minimum: 0, multipleOf: 0.01 }
+        durationDays: { type: integer, minimum: 1 }
+    Proposal:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        executor: { $ref: '#/components/schemas/ExecutorSummary' }
+        coverLetter: { type: string }
+        price: { type: number }
+        durationDays: { type: integer }
+        status: { $ref: '#/components/schemas/ProposalStatus' }
+        createdAt: { type: string, format: date-time }
+    ProposalPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageMeta' }
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Proposal' } }
+
+    # ------------------------------------------------------------ deals
+    Deal:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        orderTitle: { type: string }
+        proposalId: { type: string, format: uuid }
+        customer: { $ref: '#/components/schemas/UserBrief' }
+        executor: { $ref: '#/components/schemas/UserBrief' }
+        amount: { type: number, description: 'Сумма, которую платит заказчик' }
+        currency: { type: string, example: RUB }
+        commissionRate: { type: number, description: 'Ставка комиссии в %, зафиксированная при создании сделки', example: 12.00 }
+        commissionAmount: { type: number, description: Комиссия платформы }
+        executorPayout: { type: number, description: 'Выплата исполнителю = amount − commissionAmount' }
+        status: { $ref: '#/components/schemas/DealStatus' }
+        deadlineAt: { type: string, format: date, nullable: true }
+        ndaRequired: { type: boolean }
+        ndaSignedByBoth: { type: boolean }
+        fundedAt: { type: string, format: date-time, nullable: true }
+        acceptedAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        activeDisputeId: { type: string, format: uuid, nullable: true }
+        createdAt: { type: string, format: date-time }
+    DealPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageMeta' }
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Deal' } }
+    NdaAgreement:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        dealId: { type: string, format: uuid }
+        templateVersion: { type: string, example: v1 }
+        renderedBody: { type: string }
+        customerSignedAt: { type: string, format: date-time, nullable: true }
+        executorSignedAt: { type: string, format: date-time, nullable: true }
+    SubmissionInput:
+      type: object
+      required: [fileIds]
+      properties:
+        comment: { type: string }
+        fileIds:
+          type: array
+          minItems: 1
+          items: { type: string, format: uuid }
+    Submission:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        dealId: { type: string, format: uuid }
+        comment: { type: string, nullable: true }
+        files: { type: array, items: { $ref: '#/components/schemas/FileMeta' } }
+        status: { $ref: '#/components/schemas/SubmissionStatus' }
+        revisionComment: { type: string, nullable: true }
+        submittedAt: { type: string, format: date-time }
+        reviewedAt: { type: string, format: date-time, nullable: true }
+    CommissionSetting:
+      type: object
+      properties:
+        ratePercent: { type: number, minimum: 10, maximum: 15, example: 12.00 }
+        updatedAt: { type: string, format: date-time }
+
+    # --------------------------------------------------------- payments
+    FundRequest:
+      type: object
+      required: [provider, returnUrl]
+      properties:
+        provider: { $ref: '#/components/schemas/PaymentProvider' }
+        returnUrl: { type: string, format: uri, description: Куда вернуть заказчика после оплаты }
+    PaymentInit:
+      type: object
+      properties:
+        paymentId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/PaymentStatus' }
+        confirmationUrl: { type: string, format: uri, description: Страница оплаты у провайдера }
+    Payment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        dealId: { type: string, format: uuid }
+        type: { $ref: '#/components/schemas/PaymentType' }
+        provider: { $ref: '#/components/schemas/PaymentProvider' }
+        status: { $ref: '#/components/schemas/PaymentStatus' }
+        amount: { type: number }
+        currency: { type: string }
+        failureReason: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time, nullable: true }
+
+    # --------------------------------------------------------- disputes
+    Dispute:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        dealId: { type: string, format: uuid }
+        openedBy: { $ref: '#/components/schemas/UserBrief' }
+        reason: { type: string }
+        chatThreadId: { type: string, format: uuid, description: 'Диалог заказа, где идёт обсуждение спора' }
+        status: { $ref: '#/components/schemas/DisputeStatus' }
+        resolution: { allOf: [ { $ref: '#/components/schemas/DisputeResolution' } ], nullable: true }
+        executorAmount: { type: number, nullable: true }
+        customerAmount: { type: number, nullable: true }
+        resolutionComment: { type: string, nullable: true }
+        openedAt: { type: string, format: date-time }
+        slaDueAt: { type: string, format: date-time, description: Крайний срок решения (3 рабочих дня) }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+    DisputePage:
+      allOf:
+        - { $ref: '#/components/schemas/PageMeta' }
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Dispute' } }
+    DisputeResolutionInput:
+      type: object
+      required: [resolution, comment]
+      properties:
+        resolution: { $ref: '#/components/schemas/DisputeResolution' }
+        executorAmount: { type: number, minimum: 0, description: 'Обязательно при SPLIT' }
+        customerAmount: { type: number, minimum: 0, description: 'Обязательно при SPLIT' }
+        comment: { type: string, minLength: 5 }
+
+    # ---------------------------------------------------------- reviews
+    ReviewInput:
+      type: object
+      required: [rating]
+      properties:
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        comment: { type: string, maxLength: 2000 }
+    Review:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        dealId: { type: string, format: uuid }
+        author: { $ref: '#/components/schemas/UserBrief' }
+        targetId: { type: string, format: uuid }
+        rating: { type: integer }
+        comment: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+    ReviewPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageMeta' }
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Review' } }
+
+    # --------------------------------------------- chat, notifications
+    ChatThread:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        orderTitle: { type: string }
+        counterpart: { $ref: '#/components/schemas/UserBrief' }
+        lastMessage: { allOf: [ { $ref: '#/components/schemas/ChatMessage' } ], nullable: true }
+        unreadCount: { type: integer }
+        lastMessageAt: { type: string, format: date-time, nullable: true }
+    ChatMessage:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        threadId: { type: string, format: uuid }
+        senderId: { type: string, format: uuid }
+        body: { type: string, nullable: true }
+        file: { allOf: [ { $ref: '#/components/schemas/FileMeta' } ], nullable: true }
+        createdAt: { type: string, format: date-time }
+        readAt: { type: string, format: date-time, nullable: true }
+    Notification:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, example: DEAL_FUNDED }
+        title: { type: string }
+        body: { type: string, nullable: true }
+        payload:
+          type: object
+          additionalProperties: true
+          example: { dealId: 3fa85f64-5717-4562-b3fc-2c963f66afa6 }
+        readAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+    NotificationPage:
+      allOf:
+        - { $ref: '#/components/schemas/PageMeta' }
+        - type: object
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/Notification' } }
+
+    # ------------------------------------------------------------ admin
+    PlatformStats:
+      type: object
+      properties:
+        users:
+          type: object
+          properties:
+            executorsTotal: { type: integer }
+            executorsVerified: { type: integer }
+            customersTotal: { type: integer }
+        orders:
+          type: object
+          properties:
+            published: { type: integer }
+            total: { type: integer }
+        deals:
+          type: object
+          properties:
+            byStatus:
+              type: object
+              additionalProperties: { type: integer }
+              example: { IN_PROGRESS: 4, COMPLETED: 21 }
+            completedCount: { type: integer, description: Для критерия «≥ 20 успешных сделок» }
+            turnover: { type: number, description: Оборот по завершённым сделкам }
+            commissionRevenue: { type: number }
+        verification:
+          type: object
+          properties:
+            avgProcessingSeconds: { type: number, description: Среднее время рассмотрения заявки (цель ≤ 300 с) }
+            approvedCount: { type: integer }
+            rejectedCount: { type: integer }
+        disputes:
+          type: object
+          properties:
+            openedCount: { type: integer }
+            avgResolutionHours: { type: number }
+            resolvedWithinSlaPercent: { type: number, description: 'Доля споров, решённых за ≤ 3 рабочих дня' }
