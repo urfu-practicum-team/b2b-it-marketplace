@@ -1,15 +1,36 @@
 name: b2b-it-marketplace
 services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: marketplace
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init-app.sh:/docker-entrypoint-initdb.d/10-init-app.sh:ro
+    secrets:
+      - postgres_password
+      - marketplace_app_password
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "marketplace"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
   backend:
     build: ./backend
     restart: unless-stopped
   web:
-    image: nginx:stable-alpine
-    volumes:
-      - ${MARKETPLACE_STATIC_DIR:-./frontend/dist}:/usr/share/nginx/html:ro
-      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    build: ./frontend
     ports:
       - "${MARKETPLACE_PORT:-8081}:80"
     depends_on:
       - backend
     restart: unless-stopped
+volumes:
+  postgres_data:
+secrets:
+  postgres_password:
+    file: ${MARKETPLACE_SECRETS_DIR:-./secrets}/postgres_password
+  marketplace_app_password:
+    file: ${MARKETPLACE_SECRETS_DIR:-./secrets}/marketplace_app_password
