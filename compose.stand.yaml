@@ -1,0 +1,7 @@
+services:
+  web:
+    build: !reset null
+    image: nginx:stable-alpine
+    volumes:
+      - ${MARKETPLACE_STATIC_DIR:?Set MARKETPLACE_STATIC_DIR to the published frontend directory}:/usr/share/nginx/html:ro
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro

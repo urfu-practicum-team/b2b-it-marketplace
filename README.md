@@ -6,37 +6,32 @@
 
 ## Локальная сборка и запуск
 
-Команды выполняются из корня репозитория. Для фронтенда нужен Node.js 22.12+
-с npm. В Windows PowerShell можно использовать `npm.cmd` вместо `npm`.
+Для запуска всего приложения нужен Docker Desktop в режиме Linux-контейнеров с Docker Compose 2.24.4 или новее. Выполняйте команды из корня репозитория.
 
-### Сервер Spring Boot
+### Разовая настройка на новом компьютере
 
-При запущенном Docker выполните:
+Перед первым запуском выполните этот блок в PowerShell с установленным Python 3. Он создаст два файла в каталоге `secrets/`, который исключён из Git. Пароль `postgres` нужен для администрирования, пароль `marketplace_app` — для подключения к базе `marketplace`.
 
-```sh
-docker build -t b2b-it-marketplace-backend ./backend
-docker run --rm -p 127.0.0.1:18080:8080 b2b-it-marketplace-backend
+```powershell
+New-Item -ItemType Directory -Force secrets | Out-Null
+foreach ($name in 'postgres_password', 'marketplace_app_password') {
+    $path = Join-Path $PWD "secrets/$name"
+    if (!(Test-Path -LiteralPath $path)) {
+        $password = python -c "import secrets; print(secrets.token_hex(32))"
+        if ($LASTEXITCODE -ne 0) { throw 'Ошибка генерации пароля' }
+        [IO.File]::WriteAllText($path, $password)
+    }
+}
 ```
 
-API доступен по адресу <http://127.0.0.1:18080/api/v1/health>.
+### Запуск всего приложения
 
-Для запуска напрямую понадобятся JDK 21 и Maven 3.9:
+После разовой настройки поднимайте приложение одной командой:
 
-```sh
-mvn -f backend/pom.xml package
-java -jar backend/target/marketplace.jar --server.address=127.0.0.1 --server.port=18080
+```powershell
+docker compose up -d --build --wait
 ```
 
-### Клиент React
+Docker собирает React и Spring из текущего кода. Nginx отдаёт страницу и проксирует запросы к Spring, а PostgreSQL хранит данные в именованном томе. Откройте <http://localhost:8081/>. Когда страница получит ответ от API, она покажет «Сервер работает (UP)». Ответ API можно посмотреть по адресу <http://localhost:8081/api/v1/health>.
 
-Оставьте сервер запущенным и в другом терминале выполните:
-
-```sh
-npm --prefix frontend ci
-npm --prefix frontend run build
-npm --prefix frontend run preview -- --host 127.0.0.1 --port 4173 --strictPort
-```
-
-Готовая статика сохраняется в `frontend/dist/`. Откройте
-<http://127.0.0.1:4173/>. Страница запрашивает `GET /api/v1/health`
-через прокси Vite и при ответе `{"status":"UP"}` показывает «Сервер работает (UP)».
+Для остановки выполните `docker compose stop`. При следующем запуске пароли и данные базы сохранятся.
