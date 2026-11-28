@@ -30,3 +30,5 @@ secrets:
     file: ${MARKETPLACE_SECRETS_DIR:?}/postgres_password
   marketplace_app_password:
     file: ${MARKETPLACE_SECRETS_DIR:?}/marketplace_app_password
+  marketplace_jwt_secret:
+    file: ${MARKETPLACE_SECRETS_DIR:?}/marketplace_jwt_secret

@@ -16,7 +16,7 @@
 
 ### Разовая настройка на новом компьютере
 
-Перед первым запуском выполните этот блок в PowerShell с установленным Python 3. Он создаст два файла в каталоге `secrets/`, который исключён из Git. Пароль `postgres` нужен для администрирования, пароль `marketplace_app` — для подключения к базе `marketplace`.
+Выполните этот блок в PowerShell с установленным Python 3. Он добавит недостающие секреты в каталог `secrets/`, который исключён из Git. Пароль `postgres` нужен для администрирования, пароль `marketplace_app` — для подключения к базе `marketplace`. Ключ `marketplace_jwt_secret` используется для подписи токенов.
 
 ```powershell
 New-Item -ItemType Directory -Force secrets | Out-Null
@@ -28,6 +28,12 @@ foreach ($name in 'postgres_password', 'marketplace_app_password') {
         if ($LASTEXITCODE -ne 0) { throw 'Ошибка генерации пароля' }
         [IO.File]::WriteAllText($path, $password)
     }
+}
+$keyPath = Join-Path $PWD 'secrets/marketplace_jwt_secret'
+if (!(Test-Path -LiteralPath $keyPath)) {
+    $key = python -c "import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())"
+    if ($LASTEXITCODE -ne 0) { throw 'Ошибка генерации ключа подписи' }
+    [IO.File]::WriteAllText($keyPath, $key)
 }
 ```
 
@@ -41,7 +47,7 @@ Spring сохраняет файлы портфолио в каталоге `/va
 docker compose up -d --build --wait
 ```
 
-Docker собирает React и Spring из текущего кода. Nginx отдаёт страницу и проксирует запросы к Spring, а PostgreSQL хранит данные в именованном томе. Откройте <http://localhost:8081/>. Когда страница получит ответ от API, она покажет «Сервер работает (UP)». Ответ API можно посмотреть по адресу <http://localhost:8081/api/v1/health>.
+Docker собирает React и Spring из текущего кода. Nginx отдаёт страницу и проксирует запросы к Spring, а PostgreSQL хранит данные в именованном томе. На <http://localhost:8081/> отображается статус сервера, а форма регистрации доступна на <http://localhost:8081/register>. Ответ API проверки состояния можно посмотреть по адресу <http://localhost:8081/api/v1/health>.
 
 Для остановки выполните `docker compose stop`. При следующем запуске пароли и данные базы сохранятся.
 

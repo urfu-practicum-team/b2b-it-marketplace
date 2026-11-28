@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
+import Registration from './Registration.jsx'
 
 export default function App() {
+  return ['/register', '/register/'].includes(window.location.pathname) ? <Registration /> : <HealthPage />
+}
+
+function HealthPage() {
   const [message, setMessage] = useState('Проверяем состояние сервера…')
 
   useEffect(() => {
@@ -27,9 +32,10 @@ export default function App() {
   }, [])
 
   return (
-    <main>
+    <main className="health-page">
       <h1>B2B-маркетплейс ИТ-услуг</h1>
       <p role="status">{message}</p>
+      <a href="/register">Зарегистрироваться</a>
     </main>
   )
 }
