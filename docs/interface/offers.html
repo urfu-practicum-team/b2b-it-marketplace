@@ -1,0 +1,53 @@
+﻿<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Отклики на задание · ИТ-маркетплейс</title>
+<link rel="stylesheet" href="base.css">
+<header><strong>ИТ-маркетплейс</strong><span><a style="color:inherit" href="index.html">Каталог заданий</a> / Отклики</span></header>
+<main>
+  <div class="brief">
+  <h1>Интеграция 1С с интернет-магазином</h1>
+  <dl><div><dt>Бюджет до</dt><dd>250 000 ₽</dd></div><div><dt>Срок до</dt><dd>20 декабря</dd></div></dl></div>
+  <section aria-labelledby="offers">
+    <h2 id="offers">Отклики <span>2</span></h2>
+    <article>
+      <h3>Контур ИТ</h3>
+      <p>Сначала проверим обмен остатками на копии вашей базы. После проверки подключим каталог и настроим обновление остатков на сайте.</p>
+      <details><summary>Профиль исполнителя</summary><p>Интеграции с 1С. В портфолио — синхронизация каталога для оптового поставщика.</p></details>
+      <footer><div class="money"><small>Стоимость</small><strong>240 000 ₽</strong></div><div class="deadline"><small>Готовность</small><span>до 16 декабря</span></div><button>Выбрать исполнителя</button></footer>
+    </article>
+    <article>
+      <h3>Практика</h3>
+      <p>Включили в оценку перенос справочника и обучение. Проведём первую выгрузку вместе с вашим сотрудником и оставим инструкцию.</p>
+      <details><summary>Профиль исполнителя</summary><p>Автоматизация розничной торговли. В портфолио — перенос товарного справочника в интернет-магазин.</p></details>
+      <footer><div class="money"><small>Стоимость</small><strong>215 000 ₽</strong></div><div class="deadline"><small>Готовность</small><span>до 19 декабря</span></div><button>Выбрать исполнителя</button></footer>
+    </article>
+  </section>
+  <p role="status" id="result"></p>
+</main>
+<dialog aria-labelledby="confirm-title">
+  <h2 id="confirm-title">Подтвердить выбор?</h2>
+  <p id="terms"></p>
+  <p>Условия приёмки — каталог загружается из 1С, остатки в магазине совпадают с тестовой выгрузкой.</p>
+  <p>Будет создана сделка. Приём новых откликов закроется.</p>
+  <form method="dialog"><button value="cancel">Отмена</button> <button value="confirm">Подтвердить выбор</button></form>
+</dialog>
+<script>
+const dialog = document.querySelector('dialog')
+const terms = document.querySelector('#terms')
+for (const card of document.querySelectorAll('article')) {
+  card.querySelector('button').onclick = () => {
+    terms.textContent = ['h3', 'strong', 'footer span'].map(selector => card.querySelector(selector).textContent).join(' · ')
+    dialog.returnValue = ''
+    dialog.showModal()
+  }
+}
+dialog.onclose = () => {
+  if (dialog.returnValue === 'confirm') {
+    document.querySelector('section').hidden = true
+    document.querySelector('#result').textContent = 'Демонстрационная сделка создана. ' + terms.textContent
+  }
+}
+</script>
+</html>

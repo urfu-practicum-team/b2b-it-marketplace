@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Каталог заданий · ИТ-маркетплейс</title>
+<link rel="stylesheet" href="base.css">
+<link rel="stylesheet" href="workspace.css">
+<header><strong>ИТ-маркетплейс</strong><span>Задания</span></header>
+<main id="catalog">
+  <aside>
+    <h1>Каталог заданий</h1>
+    <a class="action" href="#new">Создать задание</a>
+    <hr>
+    <label for="search">Поиск по заданиям</label>
+    <input type="search" id="search" placeholder="Например, интеграция">
+    <a class="example" href="offers.html">Посмотреть пример откликов</a>
+  </aside>
+  <section aria-labelledby="list-heading">
+    <h2 id="list-heading">Открытые задания <span id="count"></span></h2>
+    <p role="status" id="notice"></p>
+    <div id="jobs"></div>
+  </section>
+</main>
+<main id="creation" hidden>
+  <aside>
+    <a href="#catalog">Вернуться в каталог</a>
+    <h1>Новое задание</h1>
+    <p class="hint">Все поля обязательны. После публикации задание появится в демонстрационном каталоге этой вкладки.</p>
+  </aside>
+  <section aria-label="Параметры задания">
+    <form id="publish">
+      <label for="name">Название задания</label>
+      <input id="name" name="name" required placeholder="Например, подключить склад к интернет-магазину">
+      <label for="description">Описание результата</label>
+      <textarea id="description" name="description" required rows="3" placeholder="Что должно заработать после завершения проекта?"></textarea>
+      <div class="pair">
+        <div><label for="budget">Бюджет, ₽</label><input id="budget" name="budget" type="number" min="0.01" step="0.01" required></div>
+        <div><label for="due">Срок выполнения</label><input id="due" name="due" type="date" required></div>
+      </div>
+      <label for="criteria">Условия приёмки</label>
+      <textarea id="criteria" name="criteria" required rows="3" placeholder="Как вы проверите готовую работу?"></textarea>
+      <div class="submit"><a href="#catalog">В каталог</a><button type="submit">Опубликовать задание</button></div>
+    </form>
+  </section>
+</main>
+<script src="workspace.js"></script>
+</html>
