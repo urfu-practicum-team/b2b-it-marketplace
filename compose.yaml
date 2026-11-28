@@ -20,6 +20,16 @@ services:
   backend:
     build: ./backend
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:postgresql://db:5432/marketplace}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-marketplace_app}
+      SPRING_CONFIG_IMPORT: configtree:/run/secrets/
+    secrets:
+      - source: marketplace_app_password
+        target: spring.datasource.password
   web:
     build: ./frontend
     ports:
