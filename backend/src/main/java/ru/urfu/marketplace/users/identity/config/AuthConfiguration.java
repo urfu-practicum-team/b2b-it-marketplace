@@ -1,4 +1,4 @@
-package ru.urfu.marketplace;
+package ru.urfu.marketplace.users.identity.config;
 
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import org.springframework.beans.factory.annotation.Value;
@@ -14,7 +14,7 @@ import java.util.Base64;
 import java.util.Map;
 
 @Configuration(proxyBeanMethods = false)
-class AuthConfiguration {
+public class AuthConfiguration {
 
     @Bean
     PasswordEncoder passwordEncoder() {

@@ -1,4 +1,4 @@
-package ru.urfu.marketplace;
+package ru.urfu.marketplace.users.identity.service;
 
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.jwt.JwsHeader;
@@ -6,13 +6,14 @@ import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
 import org.springframework.stereotype.Component;
+import ru.urfu.marketplace.users.identity.dto.TokenPair;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
 @Component
-class AuthTokens {
+public class AuthTokens {
 
     private static final Duration ACCESS_TTL = Duration.ofMinutes(15);
     private static final Duration REFRESH_TTL = Duration.ofDays(7);
@@ -44,6 +45,4 @@ class AuthTokens {
     private String sign(JwtClaimsSet claims) {
         return encoder.encode(JwtEncoderParameters.from(HEADER, claims)).getTokenValue();
     }
-
-    record TokenPair(String accessToken, String refreshToken, long expiresIn) {}
 }
