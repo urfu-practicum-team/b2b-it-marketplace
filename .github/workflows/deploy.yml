@@ -38,8 +38,8 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.STAND_KNOWN_HOSTS }}
         run: |
           install -d -m 700 ~/.ssh
+          umask 077
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
-          chmod 600 ~/.ssh/id_deploy
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           remote=(ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes -i ~/.ssh/id_deploy "$SSH_USER@$SSH_HOST")
           tar -cf - "frontend-$GITHUB_SHA.tar.gz" "backend-$GITHUB_SHA.tar.gz" |

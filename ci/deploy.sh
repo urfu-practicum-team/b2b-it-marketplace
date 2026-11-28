@@ -2,7 +2,7 @@
 set -euo pipefail
 
 bundle=$(cd "$(dirname "$0")/.." && pwd)
-artifacts=${ARTIFACT_DIR:-$bundle}
+artifacts=${3:?release archive directory required}
 export RELEASE_SHA=${1:?commit SHA required}
 [[ $RELEASE_SHA =~ ^[0-9a-f]{40}$ ]]
 run_number=${2:?workflow run number required}
@@ -12,11 +12,10 @@ export DEPLOY_ROOT=${DEPLOY_ROOT:-/srv/b2b-it-marketplace/deploy}
 export MARKETPLACE_PORTFOLIO_DIR=${MARKETPLACE_PORTFOLIO_DIR:-/srv/b2b-it-marketplace/portfolio}
 [[ -d $MARKETPLACE_PORTFOLIO_DIR ]]
 umask 022
-mkdir -p "$DEPLOY_ROOT"/{routes,static}
 exec 9>"$DEPLOY_ROOT/deploy.lock"
 flock 9
 cd "$DEPLOY_ROOT"
-compose=(docker compose -f "$bundle/deploy/compose.yaml")
+compose=(docker compose -f "$bundle/compose.stand.yaml")
 web() { "${compose[@]}" exec -T web "$@"; }
 workers() { web ps -o pid,args | awk '/nginx: worker process/ {print $1}'; }
 wait_for_workers() {
@@ -35,18 +34,13 @@ point_to() {
     ln -sfn "$1" routes/.next
     mv -Tf routes/.next routes/active.conf
 }
-if [[ -L routes/active.conf ]]; then
-    previous=$(readlink routes/active.conf)
-    [[ $previous =~ ^([1-9][0-9]*)-(blue|green)-[0-9a-f]{40}\.site$ ]]
-    previous_run=${BASH_REMATCH[1]}
-    previous_color=${BASH_REMATCH[2]}
-    if ((run_number < previous_run)); then
-        echo "A newer run has already been deployed"
-        exit 0
-    fi
-else
-    previous=
-    previous_color=
+previous=$(readlink routes/active.conf)
+[[ $previous =~ ^([1-9][0-9]*)-(blue|green)-[0-9a-f]{40}\.site$ ]]
+previous_run=${BASH_REMATCH[1]}
+previous_color=${BASH_REMATCH[2]}
+if ((run_number < previous_run)); then
+    echo "A newer run has already been deployed"
+    exit 0
 fi
 color=blue
 if [[ $previous_color == blue ]]; then color=green; fi
@@ -54,7 +48,7 @@ service=backend-$color
 route=$run_number-$color-$RELEASE_SHA.site
 
 # Recover an interrupted switch before reusing a possibly still referenced slot.
-if [[ -n $previous && -n $("${compose[@]}" ps -q --status running "$service") ]]; then
+if [[ -n $("${compose[@]}" ps -q --status running "$service") ]]; then
     before=$(workers)
     [[ -n $before ]]
     web nginx -t
@@ -72,16 +66,11 @@ if [[ ! -d static/$RELEASE_SHA ]]; then
     mv "$stage" "static/$RELEASE_SHA"
 fi
 
-# Keep the established database container, volume and credentials on upgrades.
-if [[ -z $("${compose[@]}" ps -q --status running db) ]]; then
-    "${compose[@]}" up -d --wait db
-fi
 "${compose[@]}" up -d --no-build --no-deps "$service"
 candidate=$("${compose[@]}" ps -aq "$service")
 ready=false
 for ((attempt=0; attempt<60; attempt++)); do
-    # Same internal network, including the first rollout before web exists.
-    if "${compose[@]}" exec -T db wget -T 2 -qO /dev/null \
+    if web wget -T 2 -qO /dev/null \
         "http://$service:8080/actuator/health/readiness"; then
         ready=true
         break
@@ -109,23 +98,6 @@ server {
     location / { try_files \$uri \$uri/ /index.html; }
 }
 EOF
-if [[ -z $previous ]]; then
-    point_to "$route"
-    # Validate the first configuration before replacing the legacy web container.
-    if ! "${compose[@]}" run --rm --no-deps web nginx -t; then
-        rm routes/active.conf
-        exit 1
-    fi
-    if ! "${compose[@]}" up -d --no-deps web; then
-        rm routes/active.conf
-        exit 1
-    fi
-    legacy=$(docker ps -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-b2b-it-marketplace}" \
-        --filter label=com.docker.compose.service=backend)
-    if [[ -n $legacy ]]; then docker stop "$legacy"; fi
-    exit 0
-fi
-
 old_workers=$(workers)
 [[ -n $old_workers ]]
 point_to "$route"

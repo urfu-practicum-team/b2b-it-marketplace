@@ -29,8 +29,6 @@ foreach ($name in 'postgres_password', 'marketplace_app_password') {
 
 Spring сохраняет файлы портфолио в каталоге `/var/lib/marketplace/portfolio`, заданном через `MARKETPLACE_PORTFOLIO_DIRECTORY`. На хосте ему соответствует `./data/portfolio` относительно `compose.yaml`. При запуске на Linux подготовьте каталог командой `sudo install -d -o 10001 -g 10001 -m 0750 ./data/portfolio`, чтобы пользователь Spring мог записывать файлы.
 
-На стенде задайте `MARKETPLACE_PORTFOLIO_DIR=/srv/b2b-it-marketplace/portfolio` в файле `.env` каждого релиза.
-
 После разовой настройки поднимайте приложение одной командой:
 
 ```powershell
@@ -40,3 +38,5 @@ docker compose up -d --build --wait
 Docker собирает React и Spring из текущего кода. Nginx отдаёт страницу и проксирует запросы к Spring, а PostgreSQL хранит данные в именованном томе. Откройте <http://localhost:8081/>. Когда страница получит ответ от API, она покажет «Сервер работает (UP)». Ответ API можно посмотреть по адресу <http://localhost:8081/api/v1/health>.
 
 Для остановки выполните `docker compose stop`. При следующем запуске пароли и данные базы сохранятся.
+
+Процесс автоматической выкладки описан в [документации стенда](docs/deployment.md).

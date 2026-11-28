@@ -28,9 +28,8 @@ def receive():
                     shutil.copyfileobj(stream.extractfile(member), output)
         if expected:
             sys.exit("Incomplete release archive")
-        script = Path(__file__).resolve().with_name("stand.sh")
-        subprocess.run(["bash", script, sha, number], check=True,
-                       env={**os.environ, "ARTIFACT_DIR": staging})
+        script = Path(__file__).resolve().with_name("deploy.sh")
+        subprocess.run(["bash", script, sha, number, staging], check=True)
 
 
 if __name__ == "__main__":
