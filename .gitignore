@@ -24,6 +24,7 @@ hs_err_pid*
 replay_pid*
 
 /backend/target/
+/docs/local/
 /secrets/
 /data/portfolio/
 /frontend/node_modules/

@@ -33,6 +33,8 @@ services:
     secrets:
       - source: marketplace_app_password
         target: spring.datasource.password
+      - source: marketplace_jwt_secret
+        target: marketplace.auth.jwt-secret
   web:
     build: ./frontend
     ports:
@@ -47,3 +49,5 @@ secrets:
     file: ${MARKETPLACE_SECRETS_DIR:-./secrets}/postgres_password
   marketplace_app_password:
     file: ${MARKETPLACE_SECRETS_DIR:-./secrets}/marketplace_app_password
+  marketplace_jwt_secret:
+    file: ${MARKETPLACE_SECRETS_DIR:-./secrets}/marketplace_jwt_secret

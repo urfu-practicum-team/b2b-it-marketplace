@@ -42,6 +42,9 @@ if ((run_number < previous_run)); then
     echo "A newer run has already been deployed"
     exit 0
 fi
+# Compose mounts the signing key by filename when it creates the candidate.
+docker run --rm -i --network none --mount "type=bind,src=$MARKETPLACE_SECRETS_DIR,dst=/secrets" \
+    --entrypoint sh postgres:17-alpine < "$bundle/ci/init-jwt.sh"
 color=blue
 if [[ $previous_color == blue ]]; then color=green; fi
 service=backend-$color
