@@ -25,6 +25,7 @@ replay_pid*
 
 /backend/target/
 /secrets/
+/data/portfolio/
 /frontend/node_modules/
 /frontend/dist/
 /frontend/.npm-cache/
