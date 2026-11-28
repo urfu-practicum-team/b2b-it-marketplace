@@ -14,6 +14,7 @@
 
 ```powershell
 New-Item -ItemType Directory -Force secrets | Out-Null
+New-Item -ItemType Directory -Force data/portfolio | Out-Null
 foreach ($name in 'postgres_password', 'marketplace_app_password') {
     $path = Join-Path $PWD "secrets/$name"
     if (!(Test-Path -LiteralPath $path)) {
@@ -25,6 +26,10 @@ foreach ($name in 'postgres_password', 'marketplace_app_password') {
 ```
 
 ### Запуск всего приложения
+
+Spring сохраняет файлы портфолио в каталоге `/var/lib/marketplace/portfolio`, заданном через `MARKETPLACE_PORTFOLIO_DIRECTORY`. На хосте ему соответствует `./data/portfolio` относительно `compose.yaml`. При запуске на Linux подготовьте каталог командой `sudo install -d -o 10001 -g 10001 -m 0750 ./data/portfolio`, чтобы пользователь Spring мог записывать файлы.
+
+На стенде задайте `MARKETPLACE_PORTFOLIO_DIR=/srv/b2b-it-marketplace/portfolio` в файле `.env` каждого релиза.
 
 После разовой настройки поднимайте приложение одной командой:
 

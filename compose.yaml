@@ -27,6 +27,9 @@ services:
       SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:postgresql://db:5432/marketplace}
       SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-marketplace_app}
       SPRING_CONFIG_IMPORT: configtree:/run/secrets/
+      MARKETPLACE_PORTFOLIO_DIRECTORY: /var/lib/marketplace/portfolio
+    volumes:
+      - ${MARKETPLACE_PORTFOLIO_DIR:-./data/portfolio}:/var/lib/marketplace/portfolio
     secrets:
       - source: marketplace_app_password
         target: spring.datasource.password
