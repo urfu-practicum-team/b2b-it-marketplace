@@ -19,7 +19,7 @@ function fillForm(role) {
   fireEvent.change(screen.getByLabelText('Имя'), { target: { value: 'Анна Смирнова' } })
   fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'anna@example.test' } })
   fireEvent.change(screen.getByLabelText('Пароль'), { target: { value: 'password123' } })
-  fireEvent.click(screen.getByLabelText(role))
+  fireEvent.click(screen.getByRole('radio', { name: new RegExp(role) }))
 }
 
 it.each([
@@ -35,14 +35,18 @@ it.each([
   expect(request).toHaveBeenCalledWith('/api/v1/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      fullName: 'Анна Смирнова',
-      email: 'anna@example.test',
-      password: 'password123',
-      role: value,
-    }),
+    body: expect.any(String),
+  })
+  expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({
+    fullName: 'Анна Смирнова',
+    email: 'anna@example.test',
+    password: 'password123',
+    role: value,
   })
   expect(await screen.findByText('Аккаунт создан')).toBeTruthy()
+  expect(screen.getByText('anna@example.test')).toBeTruthy()
+  expect(screen.getByText(role)).toBeTruthy()
+  expect(screen.getByRole('link', { name: 'На главную' }).getAttribute('href')).toBe('/')
   expect(screen.queryByLabelText('Пароль')).toBeNull()
 })
 
@@ -63,7 +67,7 @@ it('сохраняет заполненную форму при конфликт
   expect(email.value).toBe('anna@example.test')
   expect(screen.getByLabelText('Имя').value).toBe('Анна Смирнова')
   expect(screen.getByLabelText('Пароль').value).toBe('password123')
-  expect(screen.getByLabelText('Исполнитель').checked).toBe(true)
+  expect(screen.getByRole('radio', { name: /Исполнитель/ }).checked).toBe(true)
 
   fireEvent.change(email, { target: { value: 'anna.new@example.test' } })
   expect(screen.queryByRole('alert')).toBeNull()

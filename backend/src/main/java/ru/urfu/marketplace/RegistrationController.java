@@ -61,7 +61,7 @@ public class RegistrationController {
     @ResponseStatus(HttpStatus.CONFLICT)
     ApiError emailTaken() {
         String message = "Этот email уже зарегистрирован.";
-        return new ApiError("EMAIL_ALREADY_EXISTS", message, Instant.now(), List.of(new FieldError("email", message)));
+        return new ApiError("ALREADY_EXISTS", message, Instant.now(), List.of(new FieldError("email", message)));
     }
 
     record RegisterRequest(

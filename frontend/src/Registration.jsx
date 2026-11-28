@@ -2,6 +2,7 @@ import { useState } from 'react'
 import './registration.css'
 
 export default function Registration() {
+  const [account, setAccount] = useState(null)
   const [status, setStatus] = useState('idle')
   const [formError, setFormError] = useState('')
   const [emailError, setEmailError] = useState('')
@@ -23,7 +24,7 @@ export default function Registration() {
       })
 
       if (response.status === 201) {
-        setStatus('created')
+        setAccount({ email: fields.email, role: fields.role })
         return
       }
 
@@ -45,23 +46,40 @@ export default function Registration() {
   return (
     <div className="registration">
       <header className="registration-header">
-        <a href="/">B2B-маркетплейс ИТ-услуг</a>
+        <a href="/">IT Подряд</a>
       </header>
-      <main className="registration-main">
-        <div className="registration-intro">
-          <h1>Регистрация</h1>
-          {status !== 'created' && (
-            <p>Выберите, как будете работать на площадке — размещать задания или выполнять их.</p>
-          )}
-        </div>
-
-        <div className="registration-panel">
-          <div role="status">
-            {status === 'created' && <h2>Аккаунт создан</h2>}
+      {account ? (
+        <main className="registration-success">
+          <span className="success-mark" aria-hidden="true" />
+          <h1 tabIndex={-1} ref={node => node?.focus()}>Аккаунт создан</h1>
+          <dl>
+            <div><dt>Email</dt><dd>{account.email}</dd></div>
+            <div><dt>Тип аккаунта</dt><dd>{account.role === 'CUSTOMER' ? 'Заказчик' : 'Исполнитель'}</dd></div>
+          </dl>
+          <a href="/">На главную</a>
+        </main>
+      ) : (
+        <main className="registration-main">
+          <div className="registration-intro">
+            <h1>Регистрация</h1>
+            <p>Создайте аккаунт для работы с ИТ-заказами.</p>
           </div>
-          {status !== 'created' && (
+          <div className="registration-panel">
             <form onSubmit={register} aria-label="Регистрация" aria-busy={submitting}>
               <fieldset className="registration-fields" disabled={submitting}>
+                <fieldset className="registration-roles">
+                  <legend>Тип аккаунта</legend>
+                  <div className="registration-role-options">
+                    <label>
+                      <input type="radio" name="role" value="CUSTOMER" required />
+                      <span>Заказчик<small>Размещаю задания</small></span>
+                    </label>
+                    <label>
+                      <input type="radio" name="role" value="EXECUTOR" required />
+                      <span>Исполнитель<small>Беру задания в работу</small></span>
+                    </label>
+                  </div>
+                </fieldset>
                 <div className="registration-field">
                   <label htmlFor="full-name">Имя</label>
                   <input id="full-name" name="fullName" autoComplete="name" required maxLength={200} />
@@ -96,21 +114,13 @@ export default function Registration() {
                   <p id="password-length" className="registration-hint">От 8 до 72 символов</p>
                 </div>
 
-                <fieldset className="registration-roles">
-                  <legend>Роль</legend>
-                  <div className="registration-role-options">
-                    <label><input type="radio" name="role" value="CUSTOMER" required /> Заказчик</label>
-                    <label><input type="radio" name="role" value="EXECUTOR" required /> Исполнитель</label>
-                  </div>
-                </fieldset>
-
                 {formError && <p className="registration-error" role="alert">{formError}</p>}
                 <button type="submit">{submitting ? 'Создаём аккаунт…' : 'Создать аккаунт'}</button>
               </fieldset>
             </form>
-          )}
-        </div>
-      </main>
+          </div>
+        </main>
+      )}
     </div>
   )
 }

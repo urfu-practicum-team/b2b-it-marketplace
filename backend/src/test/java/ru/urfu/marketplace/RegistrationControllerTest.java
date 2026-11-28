@@ -108,7 +108,7 @@ class RegistrationControllerTest {
 
         register(validRequest("\"CUSTOMER\""))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("EMAIL_ALREADY_EXISTS"))
+                .andExpect(jsonPath("$.code").value("ALREADY_EXISTS"))
                 .andExpect(jsonPath("$.details[0].field").value("email"));
     }
 

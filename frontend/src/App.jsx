@@ -33,7 +33,7 @@ function HealthPage() {
 
   return (
     <main className="health-page">
-      <h1>B2B-маркетплейс ИТ-услуг</h1>
+      <h1>IT Подряд</h1>
       <p role="status">{message}</p>
       <a href="/register">Зарегистрироваться</a>
     </main>
