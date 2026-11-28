@@ -1,0 +1,45 @@
+﻿
+:root { color-scheme: light; --paper:#f6f4ef; --surface:#fffefa; --ink:#282329; --muted:#625d60; --line:#d4ceca; --accent:#733555 }
+* { box-sizing:border-box }
+body { margin:0; background:var(--paper); color:var(--ink); font:16px/1.5 "Segoe UI",system-ui,sans-serif; accent-color:var(--accent) }
+::selection { color:var(--ink); background:#e4c7d6 }
+:focus-visible { outline:3px solid var(--accent); outline-offset:4px }
+header { display:flex; align-items:center; gap:24px; padding:16px max(40px,calc((100vw - 1152px)/2)); background:#302a31; color:var(--surface); border-bottom:3px solid #c489a8 }
+header strong { font-size:1.125rem; letter-spacing:-.02em }
+header span { padding-left:24px; border-left:1px solid #716971; color:#e3dae0; font-size:.875rem }
+main { width:min(1152px,calc(100% - 80px)); margin:68px auto; display:grid; grid-template-columns:minmax(245px,.83fr) minmax(380px,1.7fr); gap:64px; align-items:start }
+h1,h2,h3,p { margin:0 }
+h1 { max-width:17ch; font-size:2.375rem; line-height:1.12; letter-spacing:-.036em; overflow-wrap:anywhere }
+h2 { font-size:1.625rem; line-height:1.22; letter-spacing:-.025em }
+h3 { font-size:1.375rem; line-height:1.24; letter-spacing:-.018em }
+.brief dl { margin:28px 0 0 }
+.brief dl div { display:flex; justify-content:space-between; align-items:baseline; gap:12px; padding:10px 0; border-top:1px solid var(--line) }
+dt { color:var(--muted); font-size:.875rem }
+dd { margin:0; font-weight:600 }
+section h2 { margin-bottom:23px }
+section h2 span { margin-left:.22em; color:var(--muted); font-weight:400 }
+article { border:1px solid var(--line); border-radius:12px; background:var(--surface); padding:24px }
+article + article { margin-top:12px }
+article > p { max-width:67ch; margin:10px 0; color:#3d383d }
+details { margin:7px 0 15px }
+summary { width:fit-content; padding-block:5px; color:var(--accent); cursor:pointer; font-size:.9375rem; font-weight:600 }
+summary:hover { text-decoration:underline; text-underline-offset:3px }
+details p { margin-top:4px; color:var(--muted); font-size:.9375rem }
+footer { border-top:1px solid var(--line); padding-top:15px; display:grid; grid-template-columns:1fr 1fr auto; align-items:end; gap:12px }
+.money,.deadline { display:grid; font-variant-numeric:tabular-nums; line-height:1.35 }
+footer small { color:var(--muted); font-size:.8125rem; margin-bottom:4px }
+.money strong,.deadline span { font-size:1rem; font-weight:600 }
+button { border:1px solid var(--accent); border-radius:6px; background:transparent; color:var(--accent); padding:10px 14px; cursor:pointer; font:600 .875rem/1.4 "Segoe UI",system-ui,sans-serif }
+button:hover { background:#f3e7ee }
+button:active { background:#e9d6e1 }
+dialog { width:min(440px,calc(100% - 32px)); border:0; border-radius:14px; background:var(--surface); padding:28px; color:var(--ink); box-shadow:0 20px 60px #29212a30 }
+dialog::backdrop { background:#29212a70 }
+dialog p { margin-top:14px }
+#terms { font-weight:600 }
+form { display:flex; justify-content:end; flex-wrap:wrap; gap:8px; margin-top:24px }
+button[value=confirm] { background:var(--accent); color:white }
+button[value=confirm]:hover { background:#57273f }
+#result:empty { display:none }
+#result { padding:20px 24px; border:1px solid var(--line); border-radius:12px; background:var(--surface); font-weight:600 }
+@media(max-width:930px) { main { gap:28px; grid-template-columns:minmax(205px,.75fr) minmax(350px,1.5fr) } footer { grid-template-columns:1fr 1fr } footer button { grid-column:1/-1; width:fit-content } }
+@media(max-width:720px) { header { padding:14px 16px; gap:16px } header span { padding-left:16px } main { width:min(calc(100% - 32px),540px); margin:28px auto 40px; grid-template-columns:minmax(0,1fr) } h1 { font-size:1.875rem; max-width:22ch } .brief dl { margin-top:18px } article { padding:18px } section h2 { margin-bottom:14px } }
