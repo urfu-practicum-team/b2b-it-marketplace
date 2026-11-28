@@ -1,0 +1,46 @@
+name: Deploy marketplace
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: stand
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+          tar -czf "../frontend-$GITHUB_SHA.tar.gz" -C dist .
+      - name: Build backend
+        shell: bash
+        run: |
+          docker build -t "marketplace-backend:$GITHUB_SHA" backend
+          docker save "marketplace-backend:$GITHUB_SHA" | gzip > "backend-$GITHUB_SHA.tar.gz"
+      - name: Deliver and activate release
+        shell: bash
+        env:
+          SSH_HOST: ${{ vars.STAND_SSH_HOST }}
+          SSH_USER: ${{ vars.STAND_SSH_USER }}
+          SSH_PORT: ${{ vars.STAND_SSH_PORT || '22' }}
+          SSH_KEY: ${{ secrets.STAND_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.STAND_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          remote=(ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes -i ~/.ssh/id_deploy "$SSH_USER@$SSH_HOST")
+          tar -cf - "frontend-$GITHUB_SHA.tar.gz" "backend-$GITHUB_SHA.tar.gz" |
+            "${remote[@]}" "deploy $GITHUB_SHA $GITHUB_RUN_NUMBER"

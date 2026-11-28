@@ -1,0 +1,32 @@
+name: b2b-it-marketplace
+
+x-backend: &backend
+  extends:
+    file: ../compose.yaml
+    service: backend
+  image: marketplace-backend:${RELEASE_SHA:?}
+  build: !reset null
+
+services:
+  db:
+    extends:
+      file: ../compose.yaml
+      service: db
+  backend-blue: *backend
+  backend-green: *backend
+  web:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    ports:
+      - "${MARKETPLACE_PORT:-8081}:80"
+    volumes:
+      - ${DEPLOY_ROOT:?}/routes:/etc/nginx/conf.d:ro
+      - ${DEPLOY_ROOT:?}/static:/srv/releases:ro
+
+volumes:
+  postgres_data:
+secrets:
+  postgres_password:
+    file: ${MARKETPLACE_SECRETS_DIR:?}/postgres_password
+  marketplace_app_password:
+    file: ${MARKETPLACE_SECRETS_DIR:?}/marketplace_app_password
